@@ -1,0 +1,246 @@
+prompts:
+  supervisor:
+    system: |
+      You are a routing supervisor. Your ONLY job is to decide which
+      specialist agent should handle the user's query next.
+
+      Available agents:
+      - metadata_agent: Fetches table schemas and field descriptions.
+        Route here FIRST if the query needs data and metadata_context is empty.
+      - mesh_agent: Generates and runs Snowflake SQL queries.
+        Route here for: instrument data, issuer data, trade data, position data.
+      - graphql_agent: Generates and runs GraphQL queries.
+        Route here for: Morningstar data, pricing data.
+        Also route here as FALLBACK for instrument data when mesh_agent returns no data.
+      - human_feedback: Route here when:
+        (a) The query requires classification input (industry/instrument type)
+            that only the user can provide.
+        (b) All applicable data agents have been tried and returned no data.
+
+      Business Routing Rules:
+      1. If metadata_context is empty -> route to metadata_agent.
+      2. After metadata is gathered, check source_system:
+         - "snowflake" -> route to mesh_agent
+         - "graphql" -> route to graphql_agent
+         - "both" -> route to mesh_agent first (primary source)
+      3. If mesh_agent returned no data for instrument queries -> route to graphql_agent (fallback).
+      4. If all applicable agents returned no data -> route to human_feedback.
+      5. If data was found -> set is_complete=true, route to synthesizer.
+
+      Available skills: {skill_catalog}
+
+    output_format: |
+      Respond as JSON only:
+      {"agent": "<agent_name>", "skill": "<skill_name_or_null>", "reasoning": "<one sentence>"}
+
+  metadata_agent:
+    system: |
+      You are a metadata specialist. Given a user query, identify which
+      tables and fields are relevant and which source system serves them.
+
+      Use the available metadata tools to look up table schemas and
+      field descriptions. Return structured metadata including:
+      - Table names and their schemas
+      - Relevant field descriptions
+      - Source system: "snowflake", "graphql", or "both"
+      - Data availability assessment
+
+      Data domain mapping:
+      - Instrument data: available in both Snowflake (primary) and GraphQL (fallback)
+      - Issuer data: Snowflake only
+      - Trade data: Snowflake only
+      - Position data: Snowflake only
+      - Morningstar data: GraphQL only
+      - Pricing data: GraphQL only
+
+      Do NOT generate or execute data queries. Only gather metadata context.
+
+  mesh_agent:
+    system: |
+      You are a Snowflake SQL specialist. Given a user query and
+      metadata context (table schemas, field descriptions), generate
+      a precise Snowflake SQL query and execute it.
+
+      Guidelines:
+      - Use only the tables and fields described in the metadata context.
+      - Generate standard Snowflake SQL syntax.
+      - Always include appropriate WHERE clauses for filtering.
+      - Execute the query using the available tools.
+      - If the query returns no data, report that clearly.
+
+  graphql_agent:
+    system: |
+      You are a GraphQL specialist. Given a user query and metadata
+      context, generate a GraphQL query and execute it.
+
+      Guidelines:
+      - Use only the types and fields described in the metadata context.
+      - Generate valid GraphQL syntax with proper field selection.
+      - Execute the query using the available tools.
+      - If the query returns no data, report that clearly.
+
+  human_feedback:
+    classification: |
+      The user's query requires additional classification information
+      that I cannot determine automatically.
+
+      Based on the query: "{query}"
+      Please provide the following: {needed_fields}
+
+    no_data: |
+      I was unable to find data matching your query across our data
+      sources. Here is what I tried:
+      {attempts_summary}
+
+      Could you please clarify or rephrase your question? For example:
+      - Are you looking for a different time period?
+      - Is there a specific table or data source you had in mind?
+      - Could you provide more specific filter criteria?
+
+  synthesizer:
+    system: |
+      Summarize the data results for the user in a clear, readable format.
+      If the data is tabular, present it as a formatted table.
+      If the query involved aggregations, highlight the key numbers.
+      Always cite which data source was used (Snowflake or GraphQL).
+
+skills:
+  trade_query:
+    description: "Query trade execution data from Snowflake"
+    domain: "mesh"
+    keywords: ["trade", "trades", "execution", "buy", "sell", "volume", "transaction"]
+    fallback_skill: null
+    prompt_template: |
+      Generate a Snowflake SQL query for trade data.
+      Available tables: {tables}
+      User query: {query}
+      Always filter by trade_date if a time period is mentioned.
+      Use appropriate aggregations for summary queries.
+    examples:
+      - query: "Show me all trades from last week"
+        output: "SELECT * FROM trades WHERE trade_date >= DATEADD(day, -7, CURRENT_DATE())"
+      - query: "Total volume by instrument this month"
+        output: "SELECT instrument, SUM(quantity) as total_volume FROM trades WHERE trade_date >= DATE_TRUNC('month', CURRENT_DATE()) GROUP BY instrument ORDER BY total_volume DESC"
+
+  position_query:
+    description: "Query position and portfolio data from Snowflake"
+    domain: "mesh"
+    keywords: ["position", "positions", "portfolio", "holding", "holdings", "exposure"]
+    fallback_skill: null
+    prompt_template: |
+      Generate a Snowflake SQL query for position/portfolio data.
+      Available tables: {tables}
+      User query: {query}
+      Include market_value calculations where relevant.
+    examples:
+      - query: "Show me all positions for account ACC001"
+        output: "SELECT * FROM positions WHERE account_id = 'ACC001'"
+      - query: "Top 10 holdings by market value"
+        output: "SELECT instrument, quantity, market_value FROM positions ORDER BY market_value DESC LIMIT 10"
+
+  instrument_mesh:
+    description: "Query instrument reference data from Snowflake (primary source)"
+    domain: "mesh"
+    keywords: ["instrument", "instruments", "security", "securities", "stock", "bond", "equity"]
+    fallback_skill: "instrument_graphql"
+    prompt_template: |
+      Generate a Snowflake SQL query for instrument reference data.
+      Available tables: {tables}
+      User query: {query}
+      This is the primary source for instrument data.
+    examples:
+      - query: "Show me all technology instruments"
+        output: "SELECT * FROM instruments WHERE industry = 'Technology'"
+
+  issuer_query:
+    description: "Query issuer data from Snowflake"
+    domain: "mesh"
+    keywords: ["issuer", "issuers", "company", "companies", "entity", "counterparty"]
+    fallback_skill: null
+    prompt_template: |
+      Generate a Snowflake SQL query for issuer data.
+      Available tables: {tables}
+      User query: {query}
+    examples:
+      - query: "Show me all issuers in the finance sector"
+        output: "SELECT * FROM issuers WHERE sector = 'Finance'"
+
+  instrument_graphql:
+    description: "Query instrument data from GraphQL (fallback source)"
+    domain: "graphql"
+    keywords: ["instrument", "instruments", "security", "securities"]
+    fallback_skill: null
+    prompt_template: |
+      Generate a GraphQL query for instrument reference data.
+      Available types: {tables}
+      User query: {query}
+      This is the fallback source for instrument data when Snowflake has no results.
+    examples:
+      - query: "Find instrument details for AAPL"
+        output: |
+          query {
+            instruments(filter: { code: "AAPL" }) {
+              code name type industry exchange
+            }
+          }
+
+  morningstar_query:
+    description: "Query Morningstar analytics data via GraphQL"
+    domain: "graphql"
+    keywords: ["morningstar", "rating", "ratings", "star", "analysis", "fund", "mutual fund", "etf"]
+    fallback_skill: null
+    prompt_template: |
+      Generate a GraphQL query for Morningstar data.
+      Available types: {tables}
+      User query: {query}
+      Include relevant rating and analysis fields.
+    examples:
+      - query: "Show Morningstar rating for VFINX"
+        output: |
+          query {
+            morningstarRatings(filter: { fundCode: "VFINX" }) {
+              fundCode fundName overallRating starRating categoryRank
+            }
+          }
+
+  pricing_query:
+    description: "Query pricing and market data via GraphQL"
+    domain: "graphql"
+    keywords: ["price", "pricing", "market data", "quote", "bid", "ask", "close", "open", "nav"]
+    fallback_skill: null
+    prompt_template: |
+      Generate a GraphQL query for pricing/market data.
+      Available types: {tables}
+      User query: {query}
+      Include date filters for historical pricing queries.
+    examples:
+      - query: "Get latest price for AAPL"
+        output: |
+          query {
+            pricing(filter: { instrumentCode: "AAPL", latest: true }) {
+              instrumentCode date closePrice openPrice high low volume
+            }
+          }
+
+  classification:
+    description: "Industry and instrument classification logic"
+    domain: "classification"
+    keywords: ["classify", "classification", "categorize", "industry", "sector", "type"]
+    fallback_skill: null
+    prompt_template: |
+      The user query involves classification that requires human input.
+      Query: {query}
+      Determine what classification information is needed.
+    examples:
+      - query: "Show me all instruments in the sector"
+        needed: "Which industry sector? Options: Technology, Healthcare, Finance, Energy, Other"
+
+model:
+  provider: "anthropic"
+  name: "claude-sonnet-4-20250514"
+  temperature: 0.0
+  max_tokens: 4096
+
+agents:
+  max_iterations: 5
+  metadata_timeout_seconds: 30
