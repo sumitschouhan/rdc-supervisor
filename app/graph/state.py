@@ -57,6 +57,11 @@ class SupervisorState(TypedDict):
     pending_feedback: Optional[HumanFeedbackRequest]
     human_response: Optional[str]
 
+    # Cross-agent execution
+    execution_mode: Optional[str]            # "parallel" | "sequential" | None
+    cross_agent_targets: Optional[list[str]]  # e.g. ["mesh_agent", "graphql_agent"]
+    pending_agents: Optional[list[str]]       # Sequential queue of remaining agents
+
     # Control flow
     iteration_count: int
     is_complete: bool

@@ -12,6 +12,15 @@ prompts:
       - graphql_agent: Generates and runs GraphQL queries.
         Route here for: Morningstar data, pricing data.
         Also route here as FALLBACK for instrument data when mesh_agent returns no data.
+      - cross_agent_dispatcher: Runs BOTH mesh_agent AND graphql_agent for questions
+        that genuinely need data from both Snowflake and GraphQL to give a complete answer.
+        Set execution_mode to:
+          "parallel"    - when both data sources are independent (e.g. "show positions AND
+                          their Morningstar ratings" – positions come from Snowflake, ratings
+                          from GraphQL, neither needs the other's output).
+          "sequential"  - when the second agent needs output from the first (e.g. "for my
+                          top 10 holdings get current prices" – get holdings from Snowflake
+                          first, then use those security IDs to query pricing from GraphQL).
       - human_feedback: Route here when:
         (a) The query requires classification input (industry/instrument type)
             that only the user can provide.
@@ -22,16 +31,31 @@ prompts:
       2. After metadata is gathered, check source_system:
          - "snowflake" -> route to mesh_agent
          - "graphql" -> route to graphql_agent
-         - "both" -> route to mesh_agent first (primary source)
+         - "both" AND query only needs one side -> route to mesh_agent (primary)
+         - "both" AND query clearly needs BOTH sides -> route to cross_agent_dispatcher
       3. If mesh_agent returned no data for instrument queries -> route to graphql_agent (fallback).
       4. If all applicable agents returned no data -> route to human_feedback.
       5. If data was found -> set is_complete=true, route to synthesizer.
 
+      Cross-agent trigger examples:
+      - "Show me fund positions with their Morningstar star ratings"
+        -> parallel (positions=Snowflake, ratings=GraphQL, independent)
+      - "For my top 10 holdings by weight, get current bid/ask prices"
+        -> sequential (holdings from Snowflake first, then price lookup in GraphQL)
+      - "List all trades this week alongside live pricing"
+        -> parallel (trades=Snowflake, pricing=GraphQL, independent)
+
       Available skills: {skill_catalog}
 
     output_format: |
-      Respond as JSON only:
+      Respond as JSON only. Use ONE of these two formats:
+
+      Single agent:
       {"agent": "<agent_name>", "skill": "<skill_name_or_null>", "reasoning": "<one sentence>"}
+
+      Cross-agent (both Snowflake AND GraphQL needed):
+      {"agent": "cross_agent_dispatcher", "execution_mode": "parallel", "agents": ["mesh_agent", "graphql_agent"], "skill": null, "reasoning": "<one sentence>"}
+      {"agent": "cross_agent_dispatcher", "execution_mode": "sequential", "agents": ["mesh_agent", "graphql_agent"], "skill": null, "reasoning": "<one sentence>"}
 
   metadata_agent:
     system: |
@@ -103,6 +127,10 @@ prompts:
       If the data is tabular, present it as a formatted table.
       If the query involved aggregations, highlight the key numbers.
       Always cite which data source was used (Snowflake or GraphQL).
+      If results from MULTIPLE agents are present, correlate and merge them into a
+      single unified answer. Clearly label which fields came from which source.
+      For cross-source joins (e.g. positions enriched with ratings), present the
+      combined view rather than separate sections where possible.
 
 skills:
   trade_query:

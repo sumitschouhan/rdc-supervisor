@@ -17,6 +17,7 @@ from app.skills.registry import SkillRegistry
 from app.agents.metadata_agent import MetadataAgent
 from app.agents.mesh_agent import MeshAgent
 from app.agents.graphql_agent import GraphQLAgent
+from app.agents.cross_agent_dispatcher import CrossAgentDispatcher
 from app.agents.human_feedback_agent import HumanFeedbackAgent
 from app.agents.synthesizer import SynthesizerAgent
 
@@ -58,6 +59,18 @@ def get_graph() -> Any:
 def supervisor_node(state: SupervisorState) -> dict:
     """Analyzes user query + state, decides which agent to route to."""
     assert _model is not None and _prompt_loader is not None and _skill_registry is not None
+
+    # Sequential cross-agent: dequeue the next pending agent without calling the LLM
+    pending = state.get("pending_agents") or []
+    if pending:
+        next_agent = pending[0]
+        remaining = pending[1:]
+        return {
+            "current_agent": next_agent,
+            "pending_agents": remaining,
+            "route_reasoning": f"Sequential cross-agent: running {next_agent} next",
+            "iteration_count": state.get("iteration_count", 0) + 1,
+        }
 
     user_msg = _get_latest_user_message(state)
 
@@ -102,11 +115,17 @@ def supervisor_node(state: SupervisorState) -> dict:
     response = _model.invoke(messages)
 
     # Parse JSON routing decision
+    execution_mode = None
+    cross_agent_targets = None
     try:
         decision = json.loads(response.content)
         agent = decision["agent"]
         skill = decision.get("skill")
         reasoning = decision.get("reasoning", "")
+        # Cross-agent fields (only present when agent == "cross_agent_dispatcher")
+        if agent == "cross_agent_dispatcher":
+            execution_mode = decision.get("execution_mode", "parallel")
+            cross_agent_targets = decision.get("agents", ["mesh_agent", "graphql_agent"])
     except (json.JSONDecodeError, KeyError, TypeError):
         # Fallback: try to extract agent name from text
         content = response.content if isinstance(response.content, str) else str(response.content)
@@ -114,7 +133,10 @@ def supervisor_node(state: SupervisorState) -> dict:
         skill = None
         reasoning = f"Could not parse routing decision: {content[:100]}"
 
-        for candidate in ["metadata_agent", "mesh_agent", "graphql_agent", "human_feedback"]:
+        for candidate in [
+            "cross_agent_dispatcher", "metadata_agent", "mesh_agent",
+            "graphql_agent", "human_feedback",
+        ]:
             if candidate in content:
                 agent = candidate
                 break
@@ -123,6 +145,8 @@ def supervisor_node(state: SupervisorState) -> dict:
         "current_agent": agent,
         "route_reasoning": reasoning,
         "active_skill": skill,
+        "execution_mode": execution_mode,
+        "cross_agent_targets": cross_agent_targets,
         "iteration_count": state.get("iteration_count", 0) + 1,
     }
 
@@ -142,6 +166,12 @@ def mesh_agent_node(state: SupervisorState) -> dict:
 def graphql_agent_node(state: SupervisorState) -> dict:
     assert _model is not None and _prompt_loader is not None and _skill_registry is not None
     agent = GraphQLAgent(_model, _prompt_loader, _skill_registry)
+    return agent.invoke(state)
+
+
+def cross_agent_dispatcher_node(state: SupervisorState) -> dict:
+    assert _model is not None and _prompt_loader is not None and _skill_registry is not None
+    agent = CrossAgentDispatcher(_model, _prompt_loader, _skill_registry)
     return agent.invoke(state)
 
 
@@ -169,6 +199,7 @@ def build_graph() -> Any:
     builder.add_node("metadata_agent", metadata_agent_node)
     builder.add_node("mesh_agent", mesh_agent_node)
     builder.add_node("graphql_agent", graphql_agent_node)
+    builder.add_node("cross_agent_dispatcher", cross_agent_dispatcher_node)
     builder.add_node("human_feedback", human_feedback_node)
     builder.add_node("synthesizer", synthesizer_node)
 
@@ -183,9 +214,17 @@ def build_graph() -> Any:
             "metadata_agent": "metadata_agent",
             "mesh_agent": "mesh_agent",
             "graphql_agent": "graphql_agent",
+            "cross_agent_dispatcher": "cross_agent_dispatcher",
             "human_feedback": "human_feedback",
             "synthesizer": "synthesizer",
         },
+    )
+
+    # Dispatcher: if data found go to synthesizer, else back to supervisor
+    builder.add_conditional_edges(
+        "cross_agent_dispatcher",
+        route_after_data_agent,
+        {"synthesizer": "synthesizer", "supervisor": "supervisor"},
     )
 
     # Metadata always returns to supervisor for next decision
