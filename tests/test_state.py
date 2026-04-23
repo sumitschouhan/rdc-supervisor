@@ -36,12 +36,35 @@ def test_agent_result_creation():
 def test_human_feedback_request():
     req: HumanFeedbackRequest = {
         "feedback_type": "classification",
+        "title": "Classification Needed",
         "question": "Which industry?",
         "options": ["Tech", "Finance"],
+        "suggestions": ["Show me Tech instruments"],
+        "allow_free_text": False,
         "context": "Need classification",
+        "progress": "Analyzed your query.",
     }
     assert req["feedback_type"] == "classification"
+    assert req["title"] == "Classification Needed"
     assert len(req["options"]) == 2
+    assert req["allow_free_text"] is False
+    assert req["suggestions"] == ["Show me Tech instruments"]
+
+
+def test_human_feedback_request_no_data():
+    req: HumanFeedbackRequest = {
+        "feedback_type": "no_data",
+        "title": "No Results Found",
+        "question": "I searched but found nothing...",
+        "options": None,
+        "suggestions": ["Try a different date range"],
+        "allow_free_text": True,
+        "context": "No records found.",
+        "progress": "Searched Snowflake and GraphQL API.",
+    }
+    assert req["feedback_type"] == "no_data"
+    assert req["options"] is None
+    assert req["allow_free_text"] is True
 
 
 def test_supervisor_state_partial():
@@ -57,6 +80,13 @@ def test_supervisor_state_partial():
         "human_response": None,
         "iteration_count": 0,
         "is_complete": False,
+        "hil_attempt_count": 0,
+        "last_feedback_question": None,
+        "execution_mode": None,
+        "cross_agent_targets": None,
+        "pending_agents": None,
     }
     assert state["iteration_count"] == 0
     assert state["is_complete"] is False
+    assert state["hil_attempt_count"] == 0
+    assert state["last_feedback_question"] is None
