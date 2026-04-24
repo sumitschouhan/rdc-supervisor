@@ -16,6 +16,7 @@ def test_prompts_loaded():
     assert "system" in config.prompts.mesh_agent
     assert "system" in config.prompts.graphql_agent
     assert "classification" in config.prompts.human_feedback
+    assert "clarification" in config.prompts.human_feedback
     assert "no_data" in config.prompts.human_feedback
     assert "system" in config.prompts.synthesizer
 

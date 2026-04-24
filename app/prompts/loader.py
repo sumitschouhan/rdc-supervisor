@@ -31,6 +31,11 @@ class PromptLoader:
             query=query, needed_fields=needed_fields
         )
 
+    def human_feedback_clarification(self, query: str, ambiguity_reason: str) -> str:
+        return self._prompts.human_feedback["clarification"].format(
+            query=query, ambiguity_reason=ambiguity_reason
+        )
+
     def human_feedback_no_data(self, attempts_summary: str) -> str:
         return self._prompts.human_feedback["no_data"].format(
             attempts_summary=attempts_summary

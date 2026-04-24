@@ -31,9 +31,13 @@ class HumanFeedbackRequest(TypedDict, total=False):
     """Structured interrupt payload."""
 
     feedback_type: Literal["classification", "clarification", "no_data"]
+    title: str
     question: str
     options: Optional[list[str]]
+    suggestions: Optional[list[str]]
+    allow_free_text: bool
     context: str
+    progress: Optional[str]
 
 
 class SupervisorState(TypedDict):
@@ -65,3 +69,7 @@ class SupervisorState(TypedDict):
     # Control flow
     iteration_count: int
     is_complete: bool
+
+    # Human-in-the-loop tracking
+    hil_attempt_count: int
+    last_feedback_question: Optional[str]

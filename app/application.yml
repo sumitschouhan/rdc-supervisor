@@ -105,21 +105,33 @@ prompts:
 
   human_feedback:
     classification: |
-      The user's query requires additional classification information
-      that I cannot determine automatically.
+      To find the right results, I need one more detail about your query.
 
-      Based on the query: "{query}"
-      Please provide the following: {needed_fields}
+      You asked: "{query}"
+
+      Please select the {needed_fields} you are interested in:
+
+    clarification: |
+      Your query "{query}" could be interpreted in a few ways.
+
+      {ambiguity_reason}
+
+      To help me find exactly what you are looking for, could you please
+      provide a more specific question? For example, include:
+      - A time period (e.g. "last 30 days", "Q1 2025")
+      - A specific identifier (e.g. instrument code, account ID)
+      - A filter or constraint (e.g. sector, currency, status)
 
     no_data: |
-      I was unable to find data matching your query across our data
-      sources. Here is what I tried:
+      I searched our data sources but could not find results matching your query.
+
+      Here is what I checked:
       {attempts_summary}
 
-      Could you please clarify or rephrase your question? For example:
-      - Are you looking for a different time period?
-      - Is there a specific table or data source you had in mind?
-      - Could you provide more specific filter criteria?
+      Could you help me refine the search? You might try:
+      - A different time period or date range
+      - A more specific identifier (instrument code, account ID)
+      - An alternative phrasing of your question
 
   synthesizer:
     system: |

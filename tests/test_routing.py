@@ -15,6 +15,11 @@ def _make_state(**overrides):
         "human_response": None,
         "iteration_count": 0,
         "is_complete": False,
+        "hil_attempt_count": 0,
+        "last_feedback_question": None,
+        "execution_mode": None,
+        "cross_agent_targets": None,
+        "pending_agents": None,
     }
     base.update(overrides)
     return base
