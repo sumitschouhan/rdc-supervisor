@@ -1,0 +1,21 @@
+# Pinned to the latest releases verified for this template (Nov 2026).
+# Bump deliberately: LangGraph 1.x keeps backwards-compat, but betas
+# (ModelRouterMiddleware, v3 streaming, DeltaChannel) may change.
+langgraph==1.2.24
+langchain==1.5.2
+langchain-core==1.8.4
+langchain-anthropic==1.7.12
+langgraph-checkpoint==4.3.2
+# Production checkpointer (swap InMemorySaver -> AsyncPostgresSaver):
+# langgraph-checkpoint-postgres
+
+fastapi>=0.115
+uvicorn[standard]>=0.32
+pydantic>=2.9
+pyyaml>=6.0
+python-dotenv>=1.0
+
+# tests
+pytest>=8.3
+pytest-asyncio>=0.24
+httpx>=0.27
