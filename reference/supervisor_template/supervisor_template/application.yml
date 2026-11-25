@@ -1,0 +1,204 @@
+# ---------------------------------------------------------------------------
+# Everything domain-specific lives here. To build a NEW supervisor project,
+# copy this template and change mostly this file + tools/.
+# ---------------------------------------------------------------------------
+
+models:
+  # Router decides where to go -> needs judgement but short output.
+  router:
+    name: "claude-opus-5-5"
+    effort: "medium"
+    max_tokens: 4096
+  # Workers write SQL/GraphQL and call tools -> cheaper/faster model is fine.
+  worker:
+    name: "claude-sonnet-5-5"
+    effort: "medium"
+    max_tokens: 8192
+  # Synthesizer writes the final answer.
+  synthesizer:
+    name: "claude-sonnet-5-5"
+    effort: "low"
+    max_tokens: 8192
+  # Optional: tried by ModelFallbackMiddleware when a worker's model call fails.
+  fallback: "claude-opus-5-5"
+  # NOTE: do NOT set temperature/top_p/top_k for Claude 5.x models - the API
+  # rejects non-default sampling params. Use `effort` instead.
+
+limits:
+  max_supervisor_iterations: 6   # hard loop guard for the supervisor
+  max_clarifications: 2          # how many times we may interrupt the user per turn
+  worker_timeout_seconds: 90     # LangGraph node timeout (async nodes only)
+  worker_max_attempts: 2         # LangGraph RetryPolicy attempts before error_handler
+  worker_tool_calls_per_run: 4   # ToolCallLimitMiddleware
+  worker_model_calls_per_run: 6  # ModelCallLimitMiddleware
+
+# ---------------------------------------------------------------------------
+# Data agents (workers). Each becomes a LangGraph node + a create_agent() agent.
+# `tools` names must exist in tools/__init__.py TOOL_REGISTRY.
+# ---------------------------------------------------------------------------
+agents:
+  mesh_agent:
+    description: "Snowflake SQL agent. Instrument (primary), issuer, trade and position data."
+    source_system: "snowflake"
+    tools: ["run_snowflake_sql"]
+    fallback: "graphql_agent"        # used only when the skill allows it (see skills.*.fallback)
+    system_prompt: |
+      You are a Snowflake SQL specialist.
+      - Use ONLY the tables/columns listed in the task's metadata.
+      - Write one precise Snowflake SQL statement, run it with `run_snowflake_sql`.
+      - Always filter (WHERE) and LIMIT unless the user explicitly asks for everything.
+      - If the query returns no rows, say so - never invent data.
+      When done, return the structured result.
+
+  graphql_agent:
+    description: "GraphQL agent. Morningstar ratings, pricing, instrument data (fallback)."
+    source_system: "graphql"
+    tools: ["run_graphql_query"]
+    fallback: null
+    system_prompt: |
+      You are a GraphQL specialist.
+      - Use ONLY the types/fields listed in the task's metadata.
+      - Write one valid GraphQL query, run it with `run_graphql_query`.
+      - If prior results from another agent are provided (e.g. instrument codes),
+        use them as filter values.
+      - If the query returns no data, say so - never invent data.
+      When done, return the structured result.
+
+prompts:
+  metadata_agent: |
+    You are a metadata specialist. Find which tables/types answer the user's
+    question using `search_catalog`. Return the relevant tables, their source
+    system ("snowflake" or "graphql") and the columns that matter.
+    Do NOT write or run data queries.
+
+  router: |
+    You are the routing supervisor of a financial data assistant.
+    Decide which data agent(s) should answer the question.
+
+    Agents:
+    {agent_catalog}
+
+    Skills:
+    {skill_catalog}
+
+    Business rules:
+    1. Route only to agents whose source_system appears in the metadata.
+    2. Instrument data: mesh_agent first (graphql_agent is the fallback - do not pick both).
+    3. Issuer / trade / position data: mesh_agent only.
+    4. Morningstar / pricing data: graphql_agent only.
+    5. If the question needs data from BOTH systems:
+       - mode "parallel"  when the two parts are independent
+         (e.g. "positions AND Morningstar ratings").
+       - mode "sequential" when the second needs the first's output
+         (e.g. "top 10 holdings, then their prices") - list agents in order.
+    6. mode "deep" for open-ended, multi-step ANALYSIS (compare, explain why, trends,
+       risk review, "analyse ...") that needs several queries plus reasoning over them.
+       Plain lookups are never "deep" - it is slower and costlier.
+    7. If the question is ambiguous about a required classification (e.g. "the sector"
+       without naming it), set needs_clarification=true with a question and options.
+
+  synthesizer: |
+    Answer the user's question using ONLY the data results provided.
+    - Present tabular data as a markdown table; highlight key numbers.
+    - Cite the source of each part (Snowflake / GraphQL).
+    - When results from several agents relate (e.g. positions + ratings), merge
+      them into one view and label which columns came from which source.
+    - If some agent failed or returned nothing, say so briefly.
+
+  no_data_question: |
+    I couldn't find data for: "{question}".
+    Tried: {attempts}.
+    Could you rephrase or add detail (time period, identifiers, account)?
+
+# ---------------------------------------------------------------------------
+# Skills: prompt fragments injected into a worker's system prompt by
+# SkillPromptMiddleware. Adding a skill needs no code change.
+# ---------------------------------------------------------------------------
+skills:
+  trade_query:
+    agent: "mesh_agent"
+    description: "Trade executions from Snowflake"
+    keywords: ["trade", "trades", "execution", "buy", "sell", "volume"]
+    fallback: false
+    instructions: |
+      Filter by trade_date when a period is mentioned; aggregate for summaries.
+    examples:
+      - q: "Total volume by instrument this month"
+        a: "SELECT instrument, SUM(quantity) AS volume FROM trades WHERE trade_date >= DATE_TRUNC('month', CURRENT_DATE()) GROUP BY 1 ORDER BY 2 DESC"
+
+  position_query:
+    agent: "mesh_agent"
+    description: "Positions / holdings / exposure from Snowflake"
+    keywords: ["position", "positions", "portfolio", "holding", "holdings", "exposure"]
+    fallback: false
+    instructions: |
+      Include market_value; order by market_value DESC for "top" questions.
+    examples:
+      - q: "Top 10 holdings by market value"
+        a: "SELECT instrument, quantity, market_value FROM positions ORDER BY market_value DESC LIMIT 10"
+
+  instrument_query:
+    agent: "mesh_agent"
+    description: "Instrument reference data (Snowflake primary, GraphQL fallback)"
+    keywords: ["instrument", "instruments", "security", "securities", "stock", "bond", "equity"]
+    fallback: true
+    instructions: |
+      Primary source is the INSTRUMENTS table.
+    examples:
+      - q: "Technology instruments"
+        a: "SELECT * FROM instruments WHERE industry = 'Technology' LIMIT 100"
+
+  issuer_query:
+    agent: "mesh_agent"
+    description: "Issuer reference data from Snowflake"
+    keywords: ["issuer", "issuers", "company", "companies", "counterparty"]
+    fallback: false
+    instructions: ""
+    examples: []
+
+  morningstar_query:
+    agent: "graphql_agent"
+    description: "Morningstar ratings / analytics via GraphQL"
+    keywords: ["morningstar", "rating", "ratings", "star", "fund", "etf"]
+    fallback: false
+    instructions: |
+      Select overallRating, starRating and categoryRank.
+    examples:
+      - q: "Morningstar rating for VFINX"
+        a: 'query { morningstarRatings(filter: {fundCode: "VFINX"}) { fundCode overallRating starRating } }'
+
+  pricing_query:
+    agent: "graphql_agent"
+    description: "Prices / market data via GraphQL"
+    keywords: ["price", "prices", "pricing", "quote", "bid", "ask", "close", "nav"]
+    fallback: false
+    instructions: |
+      Use latest: true unless a date range is given.
+    examples:
+      - q: "Latest price for AAPL"
+        a: 'query { pricing(filter: {instrumentCode: "AAPL", latest: true}) { instrumentCode date closePrice } }'
+
+# ---------------------------------------------------------------------------
+# Deep Agents analyst mode (deep_analyst.py). Router mode "deep" goes here.
+# ---------------------------------------------------------------------------
+deep_analyst:
+  enabled: true
+  require_sql_approval: false   # true -> HITL approval for risky SQL (no LIMIT/WHERE)
+  system_prompt: |
+    You are a senior financial data analyst. Answer analytical questions by
+    delegating focused data questions to your subagents with the `task` tool:
+    - mesh_analyst: Snowflake (trades, positions, instruments, issuers)
+    - graphql_analyst: GraphQL (Morningstar ratings, pricing, instrument fallback)
+    Independent sub-questions -> call several `task`s in the SAME turn (parallel).
+    Dependent ones -> wait for the first result and pass identifiers along.
+    Save intermediate findings to /work/*.md if the analysis is long.
+    Answer only from subagent results; cite Snowflake/GraphQL for each figure.
+    If the user states a lasting preference (units, accounts, format), record it
+    in /memories/AGENTS.md.
+  guide: |
+    # RDC data conventions (read-only)
+    - Market values are in USD unless the user asks otherwise.
+    - "Holdings" and "positions" are the same POSITIONS table.
+    - Instrument identifiers: Snowflake uses `instrument`/`instrument_code`,
+      GraphQL uses `code`/`instrumentCode`/`fundCode`.
+    - Never present data that did not come from a subagent result.
