@@ -5,7 +5,8 @@
                               │        ├─> Send(graphql_agent, task)┤   or one-by-one)
                               │        ├─> human_review (interrupt) ┤
                               └────────┴────────────────────────────┘
-                                       └─> synthesizer -> END
+                                       ├─> synthesizer -> END
+                                       └─> deep_analyst (Deep Agent) -> END   (mode="deep")
 
 Why this shape ("deterministic shell, LLM core"):
 - Business rules that must ALWAYS hold (metadata first, entitlements,
@@ -32,10 +33,12 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import NodeError
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
+from langgraph.store.base import BaseStore
 from langgraph.types import Command, Overwrite, RetryPolicy, Send, interrupt
 
 from supervisor_template.agents import build_metadata_agent, build_worker_agent
 from supervisor_template.config import AppConfig
+from supervisor_template.deep_analyst import build_deep_analyst, deep_analyst_input
 from supervisor_template.context import AppContext
 from supervisor_template.llm import ModelSet, structured
 from supervisor_template.schemas import (
@@ -59,12 +62,16 @@ def build_graph(
     models: ModelSet,
     *,
     checkpointer: Optional[BaseCheckpointSaver] = None,
+    store: Optional[BaseStore] = None,
 ):
     skills = SkillRegistry(cfg.skills)
     metadata_agent = build_metadata_agent(cfg, models)
     workers = {name: build_worker_agent(name, cfg, models) for name in cfg.agents}
     router = structured(models.router, RouteDecision)
     limits = cfg.limits
+    deep = (build_deep_analyst(cfg, models, store=store,
+                               require_sql_approval=cfg.deep_analyst.require_sql_approval)
+            if cfg.deep_analyst.enabled else None)
 
     agent_catalog = "\n".join(
         f"- {n} (source_system={a.source_system}): {a.description}" for n, a in cfg.agents.items()
@@ -150,6 +157,9 @@ def build_graph(
         if decision.needs_clarification and state.get("clarifications", 0) < limits.max_clarifications:
             return Command(goto="human_review", update=update)
 
+        if decision.mode == "deep" and deep is not None:
+            return Command(goto="deep_analyst", update=update)
+
         targets = [a for a in dict.fromkeys(decision.agents) if a in allowed] or allowed[:1]
         if decision.mode == "sequential" and len(targets) > 1:
             first, *rest = targets
@@ -194,6 +204,17 @@ def build_graph(
 
         worker.__name__ = name
         return worker
+
+    async def deep_analyst_node(state: OrchestratorState, runtime: Runtime[AppContext]) -> Command:
+        """Hand the whole question to the Deep Agent; its answer is the final answer."""
+        out = await deep.ainvoke(deep_analyst_input(cfg, state["question"], state["metadata"]),
+                                 context=runtime.context)
+        answer = out["messages"][-1].text
+        return Command(goto=END, update={
+            "messages": [AIMessage(answer, name="deep_analyst")],
+            "results": [_result("deep_analyst", summary=answer[:500])],
+            "attempted": ["deep_analyst"],
+        })
 
     def worker_error_handler(state: Any, error: NodeError) -> Command:
         """Runs after the node's RetryPolicy is exhausted (or on timeout).
@@ -250,7 +271,8 @@ def build_graph(
     builder = StateGraph(OrchestratorState, context_schema=AppContext)
     builder.add_node("start_turn", start_turn)
     builder.add_node("supervisor", supervisor,
-                     destinations=("metadata_agent", "human_review", "synthesizer", *worker_names))
+                     destinations=("metadata_agent", "human_review", "synthesizer",
+                                   "deep_analyst", *worker_names))
     builder.add_node("metadata_agent", metadata_node, retry_policy=retry,
                      timeout=limits.worker_timeout_seconds)
     for name, agent in workers.items():
@@ -264,6 +286,9 @@ def build_graph(
         )
         builder.add_edge(name, "supervisor")
     builder.add_node("human_review", human_review, destinations=("supervisor",))
+    if deep is not None:
+        builder.add_node("deep_analyst", deep_analyst_node, destinations=(END,),
+                         retry_policy=retry, timeout=limits.worker_timeout_seconds * 4)
     builder.add_node("synthesizer", synthesizer)
 
     builder.add_edge(START, "start_turn")

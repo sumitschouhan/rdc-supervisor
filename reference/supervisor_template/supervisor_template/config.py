@@ -55,12 +55,20 @@ class Prompts(BaseModel):
     no_data_question: str
 
 
+class DeepAnalystConfig(BaseModel):
+    enabled: bool = True
+    require_sql_approval: bool = False
+    system_prompt: str = ""
+    guide: str = ""
+
+
 class AppConfig(BaseModel):
     models: ModelsConfig
     limits: Limits = Field(default_factory=Limits)
     agents: dict[str, AgentConfig]
     prompts: Prompts
     skills: dict[str, SkillConfig] = Field(default_factory=dict)
+    deep_analyst: DeepAnalystConfig = Field(default_factory=DeepAnalystConfig)
 
     def model_post_init(self, _ctx) -> None:  # fail fast on config typos
         for name, skill in self.skills.items():

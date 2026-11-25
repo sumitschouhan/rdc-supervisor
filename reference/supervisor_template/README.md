@@ -6,6 +6,7 @@ system on the current LangChain/LangGraph APIs. It uses the RDC domain (metadata
 **copied and adapted** for similar projects.
 
 - What changed in the libraries, and the mapping to the current `app/` code: **[WHATS_NEW.md](WHATS_NEW.md)**
+- Deep Agents research (features, use cases, best practices, roadmap): **[DEEPAGENTS_RESEARCH.md](DEEPAGENTS_RESEARCH.md)**
 - Runs fully **offline** with a deterministic demo model (no API key needed), so the graph,
   agents, middleware, fan-out, interrupts and checkpointing are exercised exactly as in
   production.
@@ -16,7 +17,7 @@ system on the current LangChain/LangGraph APIs. It uses the RDC domain (metadata
 cd reference/supervisor_template
 pip install -r requirements.txt
 
-python -m pytest -q                          # 21 tests, offline
+python -m pytest -q                          # 28 tests, offline
 python -m supervisor_template.cli --demo     # chat in the terminal, offline
 export ANTHROPIC_API_KEY=...                 # then without --demo for real Claude
 uvicorn supervisor_template.api:app --reload # HTTP API (demo mode if no key)
@@ -24,7 +25,8 @@ uvicorn supervisor_template.api:app --reload # HTTP API (demo mode if no key)
 
 Try: `Show me trades for AAPL`, `Show my positions and their Morningstar ratings` (parallel),
 `For my top holdings then get current prices` (sequential), `Show instrument details for NVDA`
-(Snowflake empty → GraphQL fallback), `Show instruments in the sector` (clarification interrupt).
+(Snowflake empty → GraphQL fallback), `Show instruments in the sector` (clarification interrupt),
+`Compare my positions with their Morningstar ratings` (→ Deep Agents analyst mode).
 
 ## Architecture
 
@@ -34,8 +36,20 @@ START → start_turn → supervisor ─┬─→ metadata_agent ─────�
                         │        ├─→ Send(graphql_agent, WorkerTask)┤   sequential: plan queue, one at a time
                         │        ├─→ human_review  (interrupt)      ┤
                         └────────┴──────────────────────────────────┘
-                                 └─→ synthesizer → END
+                                 ├─→ synthesizer → END
+                                 └─→ deep_analyst (Deep Agent) → END     mode="deep"
 ```
+
+**Analyst mode (Deep Agents).** For open-ended, multi-step analysis the router picks
+`mode="deep"`, and `deep_analyst.py` hands the question to a `create_deep_agent` that:
+- delegates to `mesh_analyst` / `graphql_analyst` subagents (in parallel, each in its own
+  context, returning `WorkerResult` JSON)
+- reads SKILL.md skills rendered from `application.yml`
+- always loads org conventions (`/guides/AGENTS.md`, read-only) and per-user memory
+  (`/memories/AGENTS.md`, a Store namespaced by `user_id`)
+- can require human approval for risky SQL (`require_sql_approval`)
+
+Plain lookups never go there: it costs more model calls.
 
 **"Deterministic shell, LLM core."** Rules that must always hold live in code in the
 `supervisor` node, so they are testable and auditable:
@@ -80,6 +94,7 @@ supervisor_template/
   graph.py               supervisor graph  ← the core
   api.py / cli.py        FastAPI (send/resume/stream/history) and terminal chat
   tools/                 search_catalog, run_snowflake_sql, run_graphql_query (mocks)
+  deep_analyst.py        Deep Agents analyst mode (subagents, skills, memory, permissions, HITL)
   patterns/subagents_as_tools.py   alternative tool-calling supervisor
   demo_model.py          offline scripted model (tests/demo only)
 tests/                   graph paths, error handler, HITL, entitlements, API, SSE

@@ -42,7 +42,7 @@ class RouteDecision(BaseModel):
         default_factory=list,
         description="Agent names to run, in execution order for sequential mode.",
     )
-    mode: Literal["single", "parallel", "sequential"] = "single"
+    mode: Literal["single", "parallel", "sequential", "deep"] = "single"
     skill: Optional[str] = Field(None, description="Best matching skill name, if any.")
     needs_clarification: bool = False
     clarification_question: Optional[str] = None

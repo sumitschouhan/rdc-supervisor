@@ -80,9 +80,23 @@ ARG_BUILDERS: dict[str, Callable[[list[BaseMessage]], dict]] = {
 
 
 # ------------------------------------------------------ structured outputs
+def _deep_tasks(messages: list[BaseMessage]) -> list[dict]:
+    """Deep Agent main loop: delegate one `task` per data source, in parallel."""
+    text = _first_human(messages)
+    q = _field(text, "Question")
+    calls = []
+    for source, sub in (("snowflake", "mesh_analyst"), ("graphql", "graphql_analyst")):
+        tables = _field(text, f"{source} tables")
+        if tables:
+            calls.append({"subagent_type": sub, "description": f"Question: {q}\nTables: {tables}"})
+    return calls
+
+
 def _route(messages: list[BaseMessage]) -> dict:
     q = _field(_first_human(messages), "Question").lower()
     sf, gql = any(w in q for w in SF_WORDS), any(w in q for w in GQL_WORDS)
+    if re.search(r"\banaly|\bcompare|\bwhy\b|\btrend|\brisk", q):
+        return {"agents": [], "mode": "deep", "reasoning": "multi-step analysis"}
     if "sector" in q and not any(s in q for s in SECTORS) and "clarification:" not in q:
         return {"needs_clarification": True, "clarification_question": "Which sector do you mean?",
                 "clarification_options": [s.title() for s in SECTORS], "reasoning": "sector not specified"}
@@ -131,12 +145,17 @@ class DemoChatModel(BaseChatModel):
         actions = [n for n in names if n in ARG_BUILDERS]
         last = messages[-1]
 
+        if isinstance(last, HumanMessage) and "task" in names and _deep_tasks(messages):
+            calls = [{"name": "task", "args": a, "id": f"call_{uuid.uuid4().hex[:8]}", "type": "tool_call"}
+                     for a in _deep_tasks(messages)]
+            return ChatResult(generations=[ChatGeneration(message=AIMessage("", tool_calls=calls))])
         if isinstance(last, HumanMessage) and actions:  # first step of an agent loop
             name, args = actions[0], ARG_BUILDERS[actions[0]](messages)
         elif schemas:  # time to return the structured result
             name, args = schemas[0], SCHEMA_FILLERS[schemas[0]](messages)
         else:  # plain text answer (synthesizer)
-            results = _field(_first_human(messages), "Results")
+            results = _field(_first_human(messages), "Results") or "\n".join(
+                m.text for m in messages if isinstance(m, ToolMessage))
             return self._text(f"[demo answer]\n{results}")
         call = {"name": name, "args": args, "id": f"call_{uuid.uuid4().hex[:8]}", "type": "tool_call"}
         return ChatResult(generations=[ChatGeneration(message=AIMessage("", tool_calls=[call]))])

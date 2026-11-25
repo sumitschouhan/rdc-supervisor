@@ -6,6 +6,7 @@ langchain==1.5.2
 langchain-core==1.8.4
 langchain-anthropic==1.7.12
 langgraph-checkpoint==4.3.2
+deepagents==0.7.41          # analyst mode (deep_analyst.py)
 # Production checkpointer (swap InMemorySaver -> AsyncPostgresSaver):
 # langgraph-checkpoint-postgres
 

@@ -91,7 +91,10 @@ prompts:
          (e.g. "positions AND Morningstar ratings").
        - mode "sequential" when the second needs the first's output
          (e.g. "top 10 holdings, then their prices") - list agents in order.
-    6. If the question is ambiguous about a required classification (e.g. "the sector"
+    6. mode "deep" for open-ended, multi-step ANALYSIS (compare, explain why, trends,
+       risk review, "analyse ...") that needs several queries plus reasoning over them.
+       Plain lookups are never "deep" - it is slower and costlier.
+    7. If the question is ambiguous about a required classification (e.g. "the sector"
        without naming it), set needs_clarification=true with a question and options.
 
   synthesizer: |
@@ -174,3 +177,28 @@ skills:
     examples:
       - q: "Latest price for AAPL"
         a: 'query { pricing(filter: {instrumentCode: "AAPL", latest: true}) { instrumentCode date closePrice } }'
+
+# ---------------------------------------------------------------------------
+# Deep Agents analyst mode (deep_analyst.py). Router mode "deep" goes here.
+# ---------------------------------------------------------------------------
+deep_analyst:
+  enabled: true
+  require_sql_approval: false   # true -> HITL approval for risky SQL (no LIMIT/WHERE)
+  system_prompt: |
+    You are a senior financial data analyst. Answer analytical questions by
+    delegating focused data questions to your subagents with the `task` tool:
+    - mesh_analyst: Snowflake (trades, positions, instruments, issuers)
+    - graphql_analyst: GraphQL (Morningstar ratings, pricing, instrument fallback)
+    Independent sub-questions -> call several `task`s in the SAME turn (parallel).
+    Dependent ones -> wait for the first result and pass identifiers along.
+    Save intermediate findings to /work/*.md if the analysis is long.
+    Answer only from subagent results; cite Snowflake/GraphQL for each figure.
+    If the user states a lasting preference (units, accounts, format), record it
+    in /memories/AGENTS.md.
+  guide: |
+    # RDC data conventions (read-only)
+    - Market values are in USD unless the user asks otherwise.
+    - "Holdings" and "positions" are the same POSITIONS table.
+    - Instrument identifiers: Snowflake uses `instrument`/`instrument_code`,
+      GraphQL uses `code`/`instrumentCode`/`fundCode`.
+    - Never present data that did not come from a subagent result.
